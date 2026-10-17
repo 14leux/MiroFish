@@ -482,3 +482,91 @@ def test_shutdown_drain_failure_remains_failed_and_retryable(monkeypatch):
         SimulationRunner._cleanup_done = False
         SimulationRunner._graph_memory_enabled.pop(simulation_id, None)
         SimulationRunner._manual_stop_requests.discard(simulation_id)
+
+
+def _patch_state(monkeypatch, state, saved):
+    monkeypatch.setattr(
+        SimulationRunner,
+        "get_run_state",
+        classmethod(lambda _cls, _simulation_id: state),
+    )
+    monkeypatch.setattr(
+        SimulationRunner,
+        "_save_run_state",
+        classmethod(lambda _cls, value: saved.append(value.runner_status)),
+    )
+    monkeypatch.setattr(
+        SimulationRunner,
+        "_sync_simulation_status",
+        classmethod(lambda _cls, *_args, **_kwargs: None),
+    )
+
+
+def test_completion_is_published_after_drain_while_process_stays_alive(monkeypatch):
+    state = SimulationRunState(
+        simulation_id="sim-1",
+        runner_status=RunnerStatus.RUNNING,
+        twitter_running=True,
+    )
+    saved = []
+    drained = []
+    _patch_state(monkeypatch, state, saved)
+    monkeypatch.setattr(
+        runner_module.ZepGraphMemoryManager,
+        "stop_updater",
+        classmethod(lambda _cls, simulation_id: drained.append(simulation_id)),
+    )
+    SimulationRunner._graph_memory_enabled["sim-1"] = True
+
+    try:
+        assert SimulationRunner._publish_completion_while_alive("sim-1") is True
+    finally:
+        SimulationRunner._graph_memory_enabled.pop("sim-1", None)
+
+    assert drained == ["sim-1"]
+    # STOPPING is the non-terminal barrier; COMPLETED only after the drain.
+    assert saved == [RunnerStatus.STOPPING, RunnerStatus.COMPLETED]
+    assert state.runner_status == RunnerStatus.COMPLETED
+    assert state.completed_at is not None
+    assert state.error is None
+
+
+def test_completion_while_alive_reports_failed_when_drain_fails(monkeypatch):
+    state = SimulationRunState(
+        simulation_id="sim-1",
+        runner_status=RunnerStatus.RUNNING,
+    )
+    saved = []
+    _patch_state(monkeypatch, state, saved)
+    monkeypatch.setattr(
+        runner_module.ZepGraphMemoryManager,
+        "stop_updater",
+        classmethod(
+            lambda _cls, _simulation_id: (_ for _ in ()).throw(
+                RuntimeError("ingestion incomplete")
+            )
+        ),
+    )
+    SimulationRunner._graph_memory_enabled["sim-1"] = True
+
+    try:
+        assert SimulationRunner._publish_completion_while_alive("sim-1") is True
+    finally:
+        SimulationRunner._graph_memory_enabled.pop("sim-1", None)
+
+    assert state.runner_status == RunnerStatus.FAILED
+    assert "ingestion incomplete" in state.error
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RunnerStatus.STOPPING, RunnerStatus.STOPPED, RunnerStatus.COMPLETED],
+)
+def test_completion_while_alive_ignores_non_running_states(monkeypatch, status):
+    state = SimulationRunState(simulation_id="sim-1", runner_status=status)
+    saved = []
+    _patch_state(monkeypatch, state, saved)
+
+    assert SimulationRunner._publish_completion_while_alive("sim-1") is False
+    assert saved == []
+    assert state.runner_status == status
