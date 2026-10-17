@@ -17,6 +17,11 @@ def is_gpt5_family(model: Optional[str]) -> bool:
     return model.strip().lower().startswith("gpt-5")
 
 
+def is_anthropic_endpoint(client: Any) -> bool:
+    """Return True when the client points at api.anthropic.com."""
+    return "api.anthropic.com" in str(getattr(client, "base_url", "")).lower()
+
+
 def create_chat_completion(
     client: Any,
     *,
@@ -40,13 +45,21 @@ def create_chat_completion(
         "messages": messages,
     }
 
-    if response_format is not None:
+    anthropic = is_anthropic_endpoint(client)
+
+    # Anthropic's OpenAI-compatible endpoint only accepts json_schema for
+    # response_format, and rejects temperature on newer models. Prompts already
+    # ask for JSON, so drop both and require an explicit max_tokens.
+    if response_format is not None and not anthropic:
         kwargs["response_format"] = response_format
 
     gpt5_family = is_gpt5_family(model)
 
-    if temperature is not None and not gpt5_family:
+    if temperature is not None and not gpt5_family and not anthropic:
         kwargs["temperature"] = temperature
+
+    if anthropic and max_tokens is None:
+        max_tokens = 8192
 
     if max_tokens is not None:
         if gpt5_family:
