@@ -160,6 +160,7 @@ from action_logger import SimulationLogManager, PlatformActionLogger
 try:
     from camel.models import ModelFactory
     from camel.types import ModelPlatformType
+    from anthropic_camel_model import create_simulation_model
     import oasis
     from oasis import (
         ActionType,
@@ -1031,9 +1032,10 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     
     print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
     
-    return ModelFactory.create(
-        model_platform=ModelPlatformType.OPENAI,
-        model_type=llm_model,
+    return create_simulation_model(
+        model_name=llm_model,
+        api_key=os.environ["OPENAI_API_KEY"],
+        base_url=llm_base_url,
     )
 
 
